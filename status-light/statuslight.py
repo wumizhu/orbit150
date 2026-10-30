@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Drive a red/yellow/green USB tower light from Claude Code hooks.
+"""Drive a green/orange/red USB status light from Claude Code hooks.
+
+Supported lights:
+    tower = Adafruit Tri-Color USB Tower Light (product 5125)
+    diy   = an RP2040 board with an RGB LED running diy/main.py
 
     green  = no session is working, ready for new input
     orange = 1 or more sessions working (the tower's yellow lamp)
@@ -29,7 +33,8 @@ except ImportError:  # Windows
     fcntl = None
 
 DEFAULTS = {
-    "port": None,          # e.g. "/dev/ttyUSB0", "/dev/cu.wchusbserial1420", "COM5"; None = auto-detect
+    "device": None,        # "tower" or "diy"; None = whichever light is plugged in
+    "port": None,          # e.g. "/dev/ttyACM0", "/dev/cu.usbmodem1101", "COM5"; None = auto-detect
     "full_load": 3,        # this many busy sessions turns the light red
     "stale_minutes": 30,   # a busy session with no activity for this long is forgotten
     "baud": 9600,
@@ -42,8 +47,9 @@ LAMP_OFF = {"red": 0x21, "yellow": 0x22, "green": 0x24}
 BUZZER_OFF = 0x28
 COLOR_TO_LAMP = {"green": "green", "orange": "yellow", "red": "red", "off": None}
 
-# The tower light uses a CH340 USB-to-serial chip.
-CH340_VID, CH340_PID = 0x1A86, 0x7523
+# USB ids used to auto-detect each light: the tower's CH340 serial chip, and
+# MicroPython on an RP2040 board.
+USB_IDS = {(0x1A86, 0x7523): "tower", (0x2E8A, 0x0005): "diy"}
 
 BUSY_EVENTS = {"UserPromptSubmit", "PreToolUse", "PostToolUse"}
 IDLE_EVENTS = {"Stop", "SessionEnd"}
@@ -134,8 +140,10 @@ def color_for(busy_count, full_load):
 
 # --- device ----------------------------------------------------------------
 
-def commands_for(color):
-    """Bytes that switch the tower to show only `color`."""
+def commands_for(color, device="tower"):
+    """Bytes that switch the light to show only `color`."""
+    if device == "diy":
+        return f"{color}\n".encode()
     lamp = COLOR_TO_LAMP[color]
     cmds = [LAMP_OFF[name] for name in ("red", "yellow", "green") if name != lamp]
     cmds.append(BUZZER_OFF)
@@ -145,16 +153,18 @@ def commands_for(color):
 
 
 def find_port(cfg):
+    """Return (port, device) for the light to use, or (None, None)."""
     if cfg.get("port"):
-        return cfg["port"]
+        return cfg["port"], cfg.get("device") or "tower"
     try:
         from serial.tools import list_ports
     except ImportError:
-        return None
+        return None, None
     for p in list_ports.comports():
-        if p.vid == CH340_VID and p.pid == CH340_PID:
-            return p.device
-    return None
+        device = USB_IDS.get((p.vid, p.pid))
+        if device and cfg.get("device") in (None, device):
+            return p.device, device
+    return None, None
 
 
 def send(color, cfg):
@@ -166,18 +176,18 @@ def send(color, cfg):
     except ImportError:
         log("pyserial is not installed: python3 -m pip install pyserial")
         return False
-    port = find_port(cfg)
+    port, device = find_port(cfg)
     if not port:
-        log("no tower light found; plug it in or set \"port\" in config.json")
+        log("no status light found; plug it in or set \"port\" in config.json")
         return False
     try:
         with serial.Serial(port, cfg.get("baud", 9600), timeout=1) as dev:
-            dev.write(commands_for(color))
+            dev.write(commands_for(color, device))
             dev.flush()
     except (serial.SerialException, OSError) as e:
         log(f"could not write to {port}: {e}")
         return False
-    log(f"light -> {color} ({port})")
+    log(f"light -> {color} ({device} on {port})")
     return True
 
 
@@ -251,7 +261,8 @@ def main(argv=None):
         for s in busy:
             print(f"  {s}")
         print(f"color: {color_for(len(busy), cfg['full_load'])}")
-        print(f"device: {'dry run' if cfg['dry_run'] else find_port(cfg) or 'not found'}")
+        port, device = find_port(cfg)
+        print(f"device: {'dry run' if cfg['dry_run'] else f'{device} on {port}' if port else 'not found'}")
         return 0
 
     if args.cmd == "test":

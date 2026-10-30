@@ -69,6 +69,24 @@ class ColorTests(Base):
         self.assertEqual(sl.commands_for("red"), bytes([0x22, 0x24, 0x28, 0x11]))
         self.assertEqual(sl.commands_for("off"), bytes([0x21, 0x22, 0x24, 0x28]))
 
+    def test_diy_commands_are_words(self):
+        self.assertEqual(sl.commands_for("orange", "diy"), b"orange\n")
+        self.assertEqual(sl.commands_for("off", "diy"), b"off\n")
+
+    def test_auto_detect_picks_light_by_usb_id(self):
+        ports = [types.SimpleNamespace(device="/dev/ttyS0", vid=None, pid=None),
+                 types.SimpleNamespace(device="/dev/ttyACM0", vid=0x2E8A, pid=0x0005)]
+        list_ports = types.SimpleNamespace(comports=lambda: ports)
+        tools = types.SimpleNamespace(list_ports=list_ports)
+        with mock.patch.dict(sys.modules, {"serial": fake_serial, "serial.tools": tools}):
+            self.assertEqual(sl.find_port(dict(sl.DEFAULTS)), ("/dev/ttyACM0", "diy"))
+            self.assertEqual(sl.find_port(dict(sl.DEFAULTS, device="tower")), (None, None))
+
+    def test_diy_light_gets_words_over_serial(self):
+        self.cfg["device"] = "diy"
+        self.hook("UserPromptSubmit", "a")
+        self.assertEqual(FakeSerial.written[-1], ("/dev/fake", b"orange\n"))
+
 
 class HookFlowTests(Base):
     def test_one_session_prompt_then_stop(self):
@@ -112,7 +130,7 @@ class HookFlowTests(Base):
 
     def test_missing_device_does_not_crash_and_retries(self):
         self.cfg["port"] = None
-        with mock.patch.object(sl, "find_port", return_value=None):
+        with mock.patch.object(sl, "find_port", return_value=(None, None)):
             self.assertEqual(self.hook("UserPromptSubmit", "a"), "orange")
         self.assertFalse((sl.state_dir() / "last_color").exists())
         # Once the light is plugged in, the next tool event catches it up.
