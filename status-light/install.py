@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Add (or remove) the status-light hooks in Claude Code's user settings.
 
-    python3 install.py              # install into ~/.claude/settings.json
-    python3 install.py --uninstall  # remove them again
+    python3 install.py                   # install into ~/.claude/settings.json
+    python3 install.py --device openrgb  # ...and use an RGB keyboard through OpenRGB
+    python3 install.py --uninstall       # remove them again
 
 Your existing settings and hooks are kept; a timestamped backup is written first.
 """
@@ -22,7 +23,9 @@ MARKER = "statuslight.py"
 
 
 def hook_command():
-    return f'"{sys.executable}" "{HERE / "statuslight.py"}" hook'
+    # Forward slashes work in every shell Claude Code may run hooks in, Windows included.
+    python = Path(sys.executable).as_posix()
+    return f'"{python}" "{(HERE / "statuslight.py").as_posix()}" hook'
 
 
 def strip_ours(settings):
@@ -55,6 +58,8 @@ def add_ours(settings):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--uninstall", action="store_true")
+    parser.add_argument("--device", choices=["tower", "diy", "openrgb"],
+                        help="which light to use (default: detect a USB light automatically)")
     parser.add_argument("--settings", type=Path, default=Path.home() / ".claude" / "settings.json")
     args = parser.parse_args(argv)
 
@@ -76,17 +81,22 @@ def main(argv=None):
         return 0
 
     config = statuslight.state_dir() / "config.json"
-    if not config.exists():
-        config.parent.mkdir(parents=True, exist_ok=True)
-        config.write_text(json.dumps(statuslight.DEFAULTS, indent=2) + "\n")
-        print(f"wrote default config {config}")
+    cfg = dict(statuslight.DEFAULTS)
+    if config.exists():
+        cfg.update(json.loads(config.read_text() or "{}"))
+    if args.device:
+        cfg["device"] = args.device
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(json.dumps(cfg, indent=2) + "\n")
+    print(f"config: {config} (device: {cfg['device'] or 'auto-detect USB light'})")
 
     print(f"hooks installed for: {', '.join(EVENTS)}")
+    module, package = ("openrgb", "openrgb-python") if cfg["device"] == "openrgb" else ("serial", "pyserial")
     try:
-        import serial  # noqa: F401
+        __import__(module)
     except ImportError:
-        print(f"\nnext: install pyserial ->  {sys.executable} -m pip install pyserial")
-    print(f"then test the light ->  {sys.executable} {HERE / 'statuslight.py'} test")
+        print(f"\nnext: install {package} ->  \"{sys.executable}\" -m pip install {package}")
+    print(f"then test the light ->  \"{sys.executable}\" \"{HERE / 'statuslight.py'}\" test")
     return 0
 
 

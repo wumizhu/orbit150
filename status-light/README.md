@@ -14,8 +14,10 @@ send a prompt and clears itself when it finishes, and the light shows the total.
 Claude Code must run on the computer the light is plugged into, because hooks
 run where Claude Code runs.
 
-Two lights are supported:
+Three kinds of light are supported:
 - **DIY**: an RP2040 board with an RGB LED. Cheapest, no soldering needed.
+- **RGB keyboard**: the whole keyboard glows the status color, through
+  [OpenRGB](https://openrgb.org). Written for the **Razer Ornata V3 X** on Windows.
 - **Tower**: Adafruit Tri-Color USB Controlled Tower Light,
   product [5125](https://www.adafruit.com/product/5125). Ready-made and pricier.
 
@@ -74,7 +76,32 @@ Then continue with **Connect it to Claude Code** below.
 
 ---
 
-## Option B: Adafruit tower light
+## Option B: RGB keyboard (Razer Ornata V3 X) through OpenRGB
+
+OpenRGB is free software that controls RGB lighting on many brands. The status
+script asks it to color the keyboard. This works on Windows and Linux; OpenRGB's
+Mac support is limited.
+
+Other keyboards OpenRGB supports work the same way, for example the SteelSeries
+Apex 3, Corsair K55 RGB PRO or Logitech G213.
+
+1. **Quit Razer Synapse** if it's installed, and stop it from starting with Windows
+   (Task Manager → Startup apps). Otherwise it fights OpenRGB over the colors.
+2. **Install OpenRGB** from <https://openrgb.org> and open it. Check that the
+   **Devices** tab lists **Razer Ornata V3 X**, and that clicking a color in OpenRGB
+   changes the keyboard. If it isn't listed, this keyboard revision isn't supported yet.
+3. **Turn on the SDK server**: in OpenRGB open the **SDK Server** tab and click
+   **Start Server** (port 6742).
+4. **Make OpenRGB start by itself** so the light works after a restart: in
+   **Settings**, enable *Start at login*, *Start minimized* and *Start server*.
+5. Continue with **Connect it to Claude Code** below, and install with
+   `--device openrgb`.
+
+The keyboard shows one color across all keys: green, orange or red.
+
+---
+
+## Option C: Adafruit tower light
 
 On macOS or Windows install the CH34x USB-serial driver from the chip maker (WCH).
 Linux already has it. Then continue below.
@@ -83,13 +110,17 @@ Linux already has it. Then continue below.
 
 ## Connect it to Claude Code
 
+**On Windows**, type `python` (or `py`) wherever these steps say `python3`. Claude Code
+on Windows also needs [Git for Windows](https://git-scm.com/download/win), which it
+uses to run hooks.
+
 1. **Linux only:** let your user open serial ports, then log out and back in:
 
    ```bash
    sudo usermod -aG dialout $USER
    ```
 
-2. **Get the code and pyserial:**
+2. **Get the code and its Python packages:**
 
    ```bash
    git clone -b claude-status-light https://github.com/wumizhu/orbit150
@@ -99,7 +130,9 @@ Linux already has it. Then continue below.
    cd orbit150/status-light && python3 -m pip install -r requirements.txt
    ```
 
-3. **Test the light.** It should cycle green → orange → red → off:
+3. **Test the light.** It should cycle green → orange → red → off. For the RGB
+   keyboard, run the install step (4) with `--device openrgb` first, so the test
+   knows to use OpenRGB:
 
    ```bash
    python3 statuslight.py test
@@ -110,6 +143,12 @@ Linux already has it. Then continue below.
 
    ```bash
    python3 install.py
+   ```
+
+   For the RGB keyboard, use this instead:
+
+   ```bash
+   python3 install.py --device openrgb
    ```
 
 5. Restart any open Claude Code sessions so they pick up the hooks.
@@ -124,9 +163,11 @@ Edit `~/.claude/status-light/config.json`:
 | Key | Default | What it does |
 |---|---|---|
 | `full_load` | `3` | Number of busy sessions that turns the light red |
-| `device` | `null` | `"diy"` or `"tower"`. `null` uses whichever light is plugged in |
+| `device` | `null` | `"diy"`, `"tower"` or `"openrgb"`. `null` uses whichever USB light is plugged in |
 | `port` | `null` | Serial port, e.g. `/dev/ttyACM0`, `/dev/cu.usbmodem1101`, `COM5`. `null` finds the light automatically. If you set it, also set `device` |
 | `stale_minutes` | `30` | A busy session with no activity for this long is forgotten (covers crashes) |
+| `openrgb_match` | `""` | Only color OpenRGB devices whose name contains this, e.g. `"Ornata"`. Empty colors every keyboard |
+| `openrgb_host`, `openrgb_port` | `127.0.0.1`, `6742` | Where OpenRGB's SDK server listens |
 | `dry_run` | `false` | Write colors to the log instead of the device |
 
 ## Everyday commands
@@ -163,6 +204,11 @@ print anything or fail, so a missing or unplugged light never interrupts Claude 
 
 - **"no status light found"**: check the cable carries data, and for the tower light
   that the driver is installed. Otherwise set `port` and `device` in `config.json` by hand.
+- **"cannot reach OpenRGB"**: OpenRGB isn't running, or its SDK server isn't started
+  (OpenRGB → SDK Server → Start Server).
+- **"OpenRGB found no device"**: OpenRGB doesn't see the keyboard. Quit Razer Synapse,
+  then in OpenRGB click Rescan Devices. The log line lists what OpenRGB does see.
+- **Keyboard flickers between colors**: another lighting app (Razer Synapse) is still running.
 - **"pyserial is not installed"**: install it with the same Python that `install.py`
   wrote into the hooks (shown in `~/.claude/settings.json`).
 - **DIY light stopped reacting after using `mpremote` or Thonny**: those tools pause
@@ -176,4 +222,4 @@ print anything or fail, so a missing or unplugged light never interrupts Claude 
 python3 -m unittest -v
 ```
 
-The tests use a fake serial port, so no light is needed.
+The tests use a fake serial port and a fake OpenRGB, so no light is needed.

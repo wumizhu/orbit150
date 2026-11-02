@@ -2,8 +2,9 @@
 """Drive a green/orange/red USB status light from Claude Code hooks.
 
 Supported lights:
-    tower = Adafruit Tri-Color USB Tower Light (product 5125)
-    diy   = an RP2040 board with an RGB LED running diy/main.py
+    tower   = Adafruit Tri-Color USB Tower Light (product 5125)
+    diy     = an RP2040 board with an RGB LED running diy/main.py
+    openrgb = an RGB keyboard (or other device) controlled through OpenRGB
 
     green  = no session is working, ready for new input
     orange = 1 or more sessions working (the tower's yellow lamp)
@@ -31,13 +32,17 @@ try:
     import fcntl
 except ImportError:  # Windows
     fcntl = None
+    import msvcrt
 
 DEFAULTS = {
-    "device": None,        # "tower" or "diy"; None = whichever light is plugged in
+    "device": None,        # "tower", "diy" or "openrgb"; None = whichever USB light is plugged in
     "port": None,          # e.g. "/dev/ttyACM0", "/dev/cu.usbmodem1101", "COM5"; None = auto-detect
     "full_load": 3,        # this many busy sessions turns the light red
     "stale_minutes": 30,   # a busy session with no activity for this long is forgotten
     "baud": 9600,
+    "openrgb_host": "127.0.0.1",
+    "openrgb_port": 6742,
+    "openrgb_match": "",   # only light OpenRGB devices whose name contains this, e.g. "Ornata"; "" = every keyboard
     "dry_run": False,      # log colors instead of talking to the device
 }
 
@@ -46,6 +51,9 @@ LAMP_ON = {"red": 0x11, "yellow": 0x12, "green": 0x14}
 LAMP_OFF = {"red": 0x21, "yellow": 0x22, "green": 0x24}
 BUZZER_OFF = 0x28
 COLOR_TO_LAMP = {"green": "green", "orange": "yellow", "red": "red", "off": None}
+
+# RGB values for lights that can show any color (OpenRGB devices).
+COLOR_TO_RGB = {"green": (0, 255, 0), "orange": (255, 80, 0), "red": (255, 0, 0), "off": (0, 0, 0)}
 
 # USB ids used to auto-detect each light: the tower's CH340 serial chip, and
 # MicroPython on an RP2040 board.
@@ -167,10 +175,50 @@ def find_port(cfg):
     return None, None
 
 
+def send_openrgb(color, cfg):
+    """Set every matching OpenRGB device (keyboards by default) to `color`."""
+    try:
+        from openrgb import OpenRGBClient
+        from openrgb.utils import DeviceType, RGBColor
+    except ImportError:
+        log("openrgb-python is not installed: python -m pip install openrgb-python")
+        return False
+    try:
+        client = OpenRGBClient(cfg["openrgb_host"], cfg["openrgb_port"], "claude-status-light")
+    except (OSError, TimeoutError) as e:
+        log(f"cannot reach OpenRGB at {cfg['openrgb_host']}:{cfg['openrgb_port']}; "
+            f"is OpenRGB running with its SDK server on? ({e})")
+        return False
+    try:
+        match = (cfg.get("openrgb_match") or "").lower()
+        if match:
+            devices = [d for d in client.devices if match in d.name.lower()]
+        else:
+            devices = [d for d in client.devices if d.type == DeviceType.KEYBOARD]
+        if not devices:
+            log(f"OpenRGB found no device matching {match or 'type keyboard'}; "
+                f"it sees: {', '.join(d.name for d in client.devices) or 'nothing'}")
+            return False
+        for dev in devices:
+            # "Direct" lets software set colors live; a few devices only offer "Static".
+            names = {m.name.lower() for m in dev.modes}
+            for mode in ("direct", "static"):
+                if mode in names:
+                    dev.set_mode(mode)
+                    break
+            dev.set_color(RGBColor(*COLOR_TO_RGB[color]))
+        log(f"light -> {color} (OpenRGB: {', '.join(d.name for d in devices)})")
+        return True
+    finally:
+        client.disconnect()
+
+
 def send(color, cfg):
     if cfg.get("dry_run"):
         log(f"[dry run] light -> {color}")
         return True
+    if cfg.get("device") == "openrgb":
+        return send_openrgb(color, cfg)
     try:
         import serial
     except ImportError:
@@ -201,11 +249,16 @@ class _Lock:
         self.f = (state_dir() / "lock").open("w")
         if fcntl:
             fcntl.flock(self.f, fcntl.LOCK_EX)
+        else:
+            msvcrt.locking(self.f.fileno(), msvcrt.LK_LOCK, 1)
         return self
 
     def __exit__(self, *exc):
         if fcntl:
             fcntl.flock(self.f, fcntl.LOCK_UN)
+        else:
+            self.f.seek(0)
+            msvcrt.locking(self.f.fileno(), msvcrt.LK_UNLCK, 1)
         self.f.close()
 
 
@@ -261,8 +314,13 @@ def main(argv=None):
         for s in busy:
             print(f"  {s}")
         print(f"color: {color_for(len(busy), cfg['full_load'])}")
-        port, device = find_port(cfg)
-        print(f"device: {'dry run' if cfg['dry_run'] else f'{device} on {port}' if port else 'not found'}")
+        if cfg["dry_run"]:
+            print("device: dry run")
+        elif cfg.get("device") == "openrgb":
+            print(f"device: OpenRGB at {cfg['openrgb_host']}:{cfg['openrgb_port']}")
+        else:
+            port, device = find_port(cfg)
+            print(f"device: {f'{device} on {port}' if port else 'not found'}")
         return 0
 
     if args.cmd == "test":

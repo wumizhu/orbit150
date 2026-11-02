@@ -145,7 +145,98 @@ class HookFlowTests(Base):
         self.assertEqual(out.getvalue(), "")
 
 
+class FakeOpenRGB:
+    """Stands in for openrgb-python: one Razer keyboard and one RAM stick."""
+    KEYBOARD, DRAM = "keyboard", "dram"
+    refuse_connection = False
+
+    class Device:
+        def __init__(self, name, type_, modes):
+            self.name, self.type = name, type_
+            self.modes = [types.SimpleNamespace(name=m) for m in modes]
+            self.mode, self.color = None, None
+
+        def set_mode(self, mode):
+            self.mode = mode
+
+        def set_color(self, color):
+            self.color = color
+
+    def __init__(self):
+        self.devices = [
+            self.Device("Razer Ornata V3 X", self.KEYBOARD, ["Direct", "Off", "Static", "Breathing"]),
+            self.Device("Kingston Fury DDR5", self.DRAM, ["Direct", "Static"]),
+        ]
+        self.disconnected = 0
+        fake = self
+
+        class Client:
+            def __init__(self, host, port, name):
+                if FakeOpenRGB.refuse_connection:
+                    raise ConnectionRefusedError("refused")
+                self.devices = fake.devices
+
+            def disconnect(self):
+                fake.disconnected += 1
+
+        self.modules = {
+            "openrgb": types.SimpleNamespace(OpenRGBClient=Client),
+            "openrgb.utils": types.SimpleNamespace(
+                DeviceType=types.SimpleNamespace(KEYBOARD=self.KEYBOARD),
+                RGBColor=lambda r, g, b: (r, g, b)),
+        }
+
+
+class OpenRGBTests(Base):
+    def setUp(self):
+        super().setUp()
+        self.cfg["device"] = "openrgb"
+        self.orgb = FakeOpenRGB()
+        FakeOpenRGB.refuse_connection = False
+
+    def hook(self, event, session):
+        with mock.patch.dict(sys.modules, self.orgb.modules):
+            return sl.handle_hook({"hook_event_name": event, "session_id": session}, self.cfg)
+
+    def test_keyboard_follows_sessions_and_ram_is_left_alone(self):
+        keyboard, ram = self.orgb.devices
+        self.hook("UserPromptSubmit", "a")
+        self.assertEqual((keyboard.mode, keyboard.color), ("direct", (255, 80, 0)))
+        self.hook("UserPromptSubmit", "b")
+        self.hook("UserPromptSubmit", "c")
+        self.assertEqual(keyboard.color, (255, 0, 0))
+        for s in "abc":
+            self.hook("Stop", s)
+        self.assertEqual(keyboard.color, (0, 255, 0))
+        self.assertIsNone(ram.color)
+        self.assertEqual(self.orgb.disconnected, 6)  # every connection is closed
+
+    def test_match_by_name(self):
+        self.cfg["openrgb_match"] = "fury"
+        self.hook("UserPromptSubmit", "a")
+        self.assertEqual(self.orgb.devices[1].color, (255, 80, 0))
+        self.assertIsNone(self.orgb.devices[0].color)
+
+    def test_openrgb_not_running_is_logged_not_raised(self):
+        FakeOpenRGB.refuse_connection = True
+        self.assertEqual(self.hook("UserPromptSubmit", "a"), "orange")
+        self.assertIn("SDK server", (sl.state_dir() / "statuslight.log").read_text())
+        self.assertFalse((sl.state_dir() / "last_color").exists())
+
+
 class InstallTests(Base):
+    def test_install_sets_device_and_keeps_other_config(self):
+        settings = Path(self.tmp.name) / "settings.json"
+        config = sl.state_dir() / "config.json"
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(json.dumps({"full_load": 4}))
+        with mock.patch("sys.stdout", io.StringIO()):
+            install.main(["--settings", str(settings), "--device", "openrgb"])
+        cfg = json.loads(config.read_text())
+        self.assertEqual((cfg["device"], cfg["full_load"]), ("openrgb", 4))
+        cmd = json.loads(settings.read_text())["hooks"]["Stop"][0]["hooks"][0]["command"]
+        self.assertNotIn("\\", cmd)
+
     def test_install_keeps_other_hooks_and_is_idempotent(self):
         settings = Path(self.tmp.name) / "settings.json"
         mine = {"type": "command", "command": "echo hi"}
